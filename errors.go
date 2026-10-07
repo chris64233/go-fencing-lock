@@ -32,4 +32,15 @@ var (
 
 	// ErrCompositeNotFound is returned for an unknown composite lease id.
 	ErrCompositeNotFound = errors.New("fencinglock: composite lease not found")
+
+	// ErrUpgradePending is returned when a pending read-to-write upgrade
+	// blocks the requested operation (e.g. granting a new read lease).
+	ErrUpgradePending = errors.New("fencinglock: upgrade pending")
+
+	// ErrUpgradeNotFound is returned when no matching pending upgrade exists.
+	ErrUpgradeNotFound = errors.New("fencinglock: upgrade not found")
+
+	// ErrUpgradeConflict is returned when an upgrade receipt no longer
+	// matches the frozen resource version, applicant or read holder set.
+	ErrUpgradeConflict = errors.New("fencinglock: upgrade conflict")
 )
