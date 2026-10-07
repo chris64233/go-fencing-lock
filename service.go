@@ -25,6 +25,56 @@ type lease struct {
 	// explain why an expired or released lease is no longer usable.
 	lastHolder string
 	lastToken  int64
+
+	// readers holds the active shared read leases keyed by holder. It is
+	// mutually exclusive with an active write lease: a resource either has
+	// readers or a single exclusive holder, never both.
+	readers map[string]*readLease
+
+	// readVersion identifies the current read generation. It advances when
+	// the read state changes in ways that must invalidate frozen upgrade
+	// snapshots (read grant, read release outside a pending upgrade, upgrade
+	// cancel, upgrade completion). Reader releases during a pending upgrade
+	// do not advance it, so the frozen version stays comparable while the
+	// upgrade waits for the other readers to drain.
+	readVersion int64
+
+	// upgrade is the pending read-to-write upgrade, or nil.
+	upgrade *upgradeState
+}
+
+// readLease is one shared read grant: holder, deadline and the read version
+// under which it was issued.
+type readLease struct {
+	holder    string
+	expiresAt time.Time
+	version   int64
+}
+
+func (r *readLease) active(now time.Time) bool {
+	return !r.expiresAt.Before(now)
+}
+
+// upgradeState is a pending upgrade request. It freezes the read version and
+// the set of read holders at request time; completion is only possible once
+// every other frozen reader has released or expired, and only while the
+// resource still carries the frozen version.
+type upgradeState struct {
+	id            string
+	applicant     string
+	frozenVersion int64
+	frozenReaders map[string]struct{}
+}
+
+// activeReaders returns the currently valid read leases.
+func (l *lease) activeReaders(now time.Time) map[string]*readLease {
+	out := make(map[string]*readLease, len(l.readers))
+	for holder, r := range l.readers {
+		if r.active(now) {
+			out[holder] = r
+		}
+	}
+	return out
 }
 
 func (l *lease) active(now time.Time) bool {
@@ -57,6 +107,8 @@ type idemRecord struct {
 
 	leaseOut     *Lease
 	compositeOut *CompositeLease
+	readOut      *ReadLease
+	upgradeOut   *UpgradeGrant
 }
 
 // requestContent is the stable fingerprint of an idempotent request.

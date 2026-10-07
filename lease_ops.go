@@ -88,6 +88,17 @@ func (s *Service) Acquire(req AcquireRequest) (*Lease, error) {
 		}
 	}
 
+	// Active shared readers or a pending upgrade block exclusive grants; a
+	// reader that wants exclusivity must go through the upgrade protocol.
+	if l.upgrade != nil {
+		rec.err = ErrUpgradePending
+		return nil, rec.err
+	}
+	if len(l.activeReaders(now)) > 0 {
+		rec.err = ErrUnavailable
+		return nil, rec.err
+	}
+
 	if l.active(now) && l.holder != req.Holder {
 		rec.err = ErrUnavailable
 		return nil, rec.err
@@ -232,6 +243,15 @@ func (s *Service) Handoff(req HandoffRequest) (*Lease, error) {
 			rec.err = ErrUnavailable
 			return nil, rec.err
 		}
+	}
+
+	if l.upgrade != nil {
+		rec.err = ErrUpgradePending
+		return nil, rec.err
+	}
+	if len(l.activeReaders(now)) > 0 {
+		rec.err = ErrUnavailable
+		return nil, rec.err
 	}
 
 	switch {

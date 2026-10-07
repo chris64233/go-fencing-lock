@@ -10,6 +10,8 @@ const (
 	StatusActive Status = "active"
 	// StatusComposite is an active lease owned by a composite lease.
 	StatusComposite Status = "composite"
+	// StatusShared is one or more active shared read leases.
+	StatusShared Status = "shared"
 	// StatusExpired is a lease whose deadline has passed.
 	StatusExpired Status = "expired"
 	// StatusReleased is a lease that was explicitly released.
@@ -26,7 +28,25 @@ type ResourceInfo struct {
 	Holder       string
 	CompositeID  string
 	ExpiresAt    time.Time
+	Readers      []ReadLeaseInfo
+	Upgrade      *UpgradeInfo
 	Reason       string
+}
+
+// ReadLeaseInfo describes one active shared read lease.
+type ReadLeaseInfo struct {
+	Holder    string
+	Version   int64
+	ExpiresAt time.Time
+}
+
+// UpgradeInfo describes the pending read-to-write upgrade on a resource.
+type UpgradeInfo struct {
+	UpgradeID     string
+	Applicant     string
+	FrozenVersion int64
+	FrozenReaders []string
+	WaitingOn     []string
 }
 
 // CompositeInfo describes a composite lease and its member status.
@@ -141,7 +161,62 @@ func (s *Service) describe(name string, l *lease, now time.Time) ResourceInfo {
 		info.Status = StatusActive
 		info.Reason = "active standalone lease"
 	}
+
+	readers := l.activeReaders(now)
+	if len(readers) > 0 {
+		names := make([]string, 0, len(readers))
+		for holder := range readers {
+			names = append(names, holder)
+		}
+		sortStrings(names)
+		for _, holder := range names {
+			r := readers[holder]
+			info.Readers = append(info.Readers, ReadLeaseInfo{
+				Holder:    holder,
+				Version:   r.version,
+				ExpiresAt: r.expiresAt,
+			})
+		}
+		if info.Status == StatusFree || info.Status == StatusReleased {
+			info.Status = StatusShared
+			info.Reason = "shared read leases active"
+		}
+	}
+	if up := l.upgrade; up != nil {
+		ui := &UpgradeInfo{
+			UpgradeID:     up.id,
+			Applicant:     up.applicant,
+			FrozenVersion: up.frozenVersion,
+		}
+		for holder := range up.frozenReaders {
+			ui.FrozenReaders = append(ui.FrozenReaders, holder)
+			if holder != up.applicant {
+				if _, stillActive := readers[holder]; stillActive {
+					ui.WaitingOn = append(ui.WaitingOn, holder)
+				}
+			}
+		}
+		sortStrings(ui.FrozenReaders)
+		sortStrings(ui.WaitingOn)
+		info.Upgrade = ui
+		info.Reason = "upgrade " + up.id + " by " + up.applicant +
+			" pending: new read leases and exclusive grants blocked"
+		if len(ui.WaitingOn) > 0 {
+			info.Reason += "; waiting on readers " + joinNames(ui.WaitingOn)
+		}
+	}
 	return info
+}
+
+func joinNames(names []string) string {
+	out := ""
+	for i, n := range names {
+		if i > 0 {
+			out += ","
+		}
+		out += n
+	}
+	return out
 }
 
 func sortStrings(a []string) {
@@ -164,6 +239,13 @@ func (s *Service) ScanExpired() []string {
 	for name, l := range s.resources {
 		if l.holder != "" && l.expired(now) {
 			out = append(out, name)
+			continue
+		}
+		for _, r := range l.readers {
+			if !r.active(now) {
+				out = append(out, name)
+				break
+			}
 		}
 	}
 	sortStrings(out)

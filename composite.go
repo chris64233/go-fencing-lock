@@ -145,6 +145,12 @@ func (s *Service) CompositeAcquire(req CompositeAcquireRequest) (*CompositeLease
 // lease are takeable; another holder's active standalone or composite lease is
 // not.
 func memberTakeable(l *lease, holder string, now time.Time) error {
+	if l.upgrade != nil {
+		return ErrUpgradePending
+	}
+	if len(l.activeReaders(now)) > 0 {
+		return ErrUnavailable
+	}
 	if !l.active(now) {
 		return nil
 	}
